@@ -1,17 +1,17 @@
 Возьмем уже готовую реализацию docker-compose (см. submodule) и запустим ее:
-′′′
+```
 cd docker-hadoop-spark
 docker-compose up -d
-′′′
+```
 
 Далее, положим .csv файлы в docker контейнер hive-server:
-′′′
+```
 docker cp ../data/transaction.csv hive-server:/home
 docker cp ../data/customer.csv hive-server:/home
-′′′
+```
 
 А затем загрузим их в hdfs (с копией для managed таблиц, т.к. "LOAD DATA INPATH" вызовет их перемещение):
-′′′
+```
 docker-compose exec hive-server bash
 hdfs dfs -mkdir hdfs://namenode:9000/user/hive/warehouse/transaction/
 hdfs dfs -mkdir hdfs://namenode:9000/user/hive/warehouse/transaction_managed/
@@ -21,15 +21,15 @@ hdfs dfs -put /home/transaction.csv hdfs://namenode:9000/user/hive/warehouse/tra
 hdfs dfs -put /home/transaction.csv hdfs://namenode:9000/user/hive/warehouse/transaction_managed/
 hdfs dfs -put /home/customer.csv hdfs://namenode:9000/user/hive/warehouse/customer/
 hdfs dfs -put /home/customer.csv hdfs://namenode:9000/user/hive/warehouse/customer_managed/
-′′′
+```
 
 Подключимся к Hive:
-′′′
+```
 beeline -u jdbc:hive2://localhost:10000
-′′′
+```
 
 Создадим managed и external таблицы на базе CSV, сначала managed:
-′′′
+```
 CREATE TABLE customer_managed (
     customer_id INT,
     first_name STRING,
@@ -72,10 +72,10 @@ FIELDS TERMINATED BY ';'
 STORED AS TEXTFILE;
 
 LOAD DATA INPATH 'hdfs://namenode:9000/user/hive/warehouse/transaction_managed/' INTO TABLE transaction_managed;
-′′′
+```
 
 , а затем external:
-′′′
+```
 CREATE EXTERNAL TABLE customer_external (
     customer_id INT,
     first_name STRING,
@@ -116,7 +116,7 @@ ROW FORMAT DELIMITED
 FIELDS TERMINATED BY ';'
 STORED AS TEXTFILE
 LOCATION 'hdfs://namenode:9000/user/hive/warehouse/transaction/';
-′′′
+```
 
 Проверим "Table Type" свойство у каких-нибудь созданных таблиц, например, у customer_managed и customer_external:
 ![Table Type таблицы customer_managed](images/image1.jpg)
@@ -124,7 +124,7 @@ LOCATION 'hdfs://namenode:9000/user/hive/warehouse/transaction/';
 , как видим, Table Type свойство соответствует ожидаемым.
 
 Теперь создадим managed таблицы в формате Parquet (как выяснится в дальнейшем, managed / extrernal свойство не влияет на перфоманс операций, а external таблицу не получится создать простой заливкой из другой таблицы -- Hive ведь хочет знать место хранения таких таблиц):
-′′′
+```
 CREATE TABLE customer_parquet
 STORED AS PARQUET
 AS SELECT * FROM customer_managed;
@@ -132,14 +132,14 @@ AS SELECT * FROM customer_managed;
 CREATE TABLE transaction_parquet
 STORED AS PARQUET
 AS SELECT * FROM transaction_managed;
-′′′
+```
 
 Проверим "InputFormat" свойство у какой-нибудь созданной таблицы, например, у customer_parquet, и убедимся что формат хранения соответствует Parquet типу:
 ![InputFormat таблицы customer_parquet](images/image3.jpg)
 , как видим, InputFormat свойство соответствует ожидаемым.
 
 Далее, распартиционируем таблицу транзакций, после чего приведем transaction_date атрибут к требуемому формату, а затем к строковому типу (иначе партиции будут плохо отображаться в файловой системе), скастим STRING поля к DOUBLE. Также, увеличим дефолтное количество возможных партиций, т.к. их по дефолту 100, и когда появляется необходимость увеличить их количество (дней в transaction_date близкое к 365 количество), MR-таска падает. Кроме того, выделим побольше памяти для того чтобы garbage collector не падал с превышением памяти (все-таки партиций слишком много, и дефолтного количества ресурсов не хватает). Все это сохраним в Parquet-никах (как поймем далее, формат parquet / textfile почти никак не влияет на производительность в данном случае, поэтому в других форматах сохранять не будем, только в данном):
-′′′
+```
 CREATE TABLE transaction_partitioned (
     transaction_id INT,
     product_id INT,
@@ -189,24 +189,24 @@ SELECT
         'yyyy-MM-dd'
     ) AS transaction_date 
 FROM transaction_managed;
-′′′
+```
 
 Проверим "partitioned" и "partitionColumns" свойства у созданной таблицы:
 ![partitioned и partitionColumns таблицы customer_parquet](images/image4.jpg)
 
 Наконец, можно приступать к сравнению времени исоплнения. Будем делать по одной группе запросов для каждой пары сравнения (4 запроса сразу). Сначала посмотрим, правильно ли вообще мы их пишем, запустим и для customer_managed + transaction_managed пары, сначала посчитаем количество подтвержденных транзакций по клиентам:
-′′′
+```
 SELECT c.customer_id, COUNT(t.transaction_id) AS approved_transactions
 FROM customer_managed c
 JOIN transaction_managed t ON c.customer_id = t.customer_id
 WHERE t.order_status = 'Approved'
 GROUP BY c.customer_id;
-′′′
+```
 
 ![Результат запроса выше](images/image5.jpg)
 
 Потом найдем распределение транзакций по месяцам и сферам деятельности:
-′′′
+```
 SELECT 
     SUBSTR(t.transaction_date, 4, 2) AS month,
     c.job_industry_category,
@@ -214,22 +214,22 @@ SELECT
 FROM transaction_managed t
 JOIN customer_managed c ON t.customer_id = c.customer_id
 GROUP BY SUBSTR(t.transaction_date, 4, 2), c.job_industry_category;
-′′′
+```
 
 ![Результат запроса выше](images/image6.jpg)
 
 Далее выведем ФИО клиентов, у которых нет транзакций:
-′′′
+```
 SELECT c.first_name, c.last_name
 FROM customer_managed c
 LEFT JOIN transaction_managed t ON c.customer_id = t.customer_id
 WHERE t.transaction_id IS NULL;
-′′′
+```
 
 ![Результат запроса выше](images/image7.jpg)
 
 И найдем клиентов с мин/макс суммой транзакций, воспользовавшись оконными функциями:
-′′′
+```
 SELECT first_name,
        last_name,
        total_spent
@@ -245,38 +245,38 @@ FROM (
     GROUP BY c.first_name, c.last_name
 ) x
 WHERE total_spent = min_total OR total_spent = max_total;
-′′′
+```
 
 ![Результат запроса выше](images/image8.jpg)
 
 Кажется, результаты запросов адекватные, и написаны они правильно. 
 
 Теперь поступим так: разделим тесты на 3 группы - managed_external_test (над парами customer_managed + transaction_managed / customer_external + transaction_external), parquet_textfile_test (над парами customer_managed + transaction_managed / customer_parquet + transaction_parquet) и partitioned_nonpartitioned_test (над парами customer_parquet + transaction_parquet / customer_parquet + transaction_partitioned (для таблицы transaction_partitioned надо учесть, что дата теперь записывается немного по-другому)), пары .sql файлов можно найти в папке sql. Используем их для сравнения по каждому тесту, сначала загрузим все тесты командой:
-′′′
+```
 docker cp ../sql hive-server:/home
-′′′
+```
 
 Далее, запустим тесты:
-′′′
+```
 hive -f /home/sql/managed_external_test/managed.sql > managed_external_test_managed.log 2>&1
 hive -f /home/sql/managed_external_test/external.sql > managed_external_test_external.log 2>&1
 hive -f /home/sql/parquet_textfile_test/parquet.sql > parquet_textfile_test_parquet.log 2>&1
 hive -f /home/sql/parquet_textfile_test/textfile.sql > parquet_textfile_test_textfile.log 2>&1
 hive -f /home/sql/partitioned_nonpartitioned_test/partitioned.sql > partitioned_nonpartitioned_test_partitioned.log 2>&1
 hive -f /home/sql/partitioned_nonpartitioned_test/nonpartitioned.sql > partitioned_nonpartitioned_test_nonpartitioned.log 2>&1
-′′′
+```
 
 Из файла, например, managed_external_test_managed.log, мы получаем информацию по времени отрабатывания всех 4-х запросов:
-′′′
+```
 $ cat managed_external_test_managed.log | grep "Time taken"
 Time taken: 9.811 seconds, Fetched: 3492 row(s)
 Time taken: 7.399 seconds, Fetched: 127 row(s)
 Time taken: 7.304 seconds, Fetched: 507 row(s)
 Time taken: 8.574 seconds, Fetched: 2 row(s)
-′′′
+```
 
 Нам же нужна их сумма, и так по каждому файлу с логами. Надо также учесть, что результат случайный, следовательно, лучше бы хоть как-то этот результат усреднить (усредним по 10-ти запускам), посчитать это для каждого теста можно таким скриптом:
-′′′
+```
 #!/bin/bash
 
 n=10
@@ -306,18 +306,18 @@ for test in "${!tests[@]}"; do
 done
 
 echo -e "$final_summary"
-′′′
+```
 
 Запустим его (также лежит в папке sql), и посмотрим на результат:
-′′′
+```
 bash /home/fetch_tests.sh
-′′′
+```
 
 ![Результат усредненных сравнительных тестов перфоманса на 10 запусках](images/image9.jpg)
 
 Наконец, мы можем сделать финальные выводы по проделанному. Как видно из тестов, managed / external практически совсем не влияет на перфоманс операций. Что и логично, фактически просто путь хранения либо внутренний, либо экспортируемый, возможен разве что совсем небольшой оверхед на какие то дополнительные проверки, но это остается для выяснения дополнительными тестами. Далее, тест parquet_textfile показывает, что тип хранения parquet, на удивление, немного уступает типу textfile. Так происходит, наверное, из-за того, что данных слишком мало, и эффект от перехода к вертикальному чтению от горизонтального тут не проявляется. Наконец, тест partitioned_nonpartitioned показывает, что партиционирование в данном случае вредит перфомансу. Это происходит, наверное, из-за слишком малого размера партиций и большого их количества, вероятно, если уменьшить размер партиции, деградации производительности или не будет совсем, или она будет куда менее явной.
 
 Напоследок, остановим контейнеры и удалим volume-ы:
-′′′
+```
 docker-compose down -v
-′′′
+```
