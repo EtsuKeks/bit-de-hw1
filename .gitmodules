@@ -1,0 +1,3 @@
+[submodule "docker-hadoop-spark"]
+	path = docker-hadoop-spark
+	url = git@github.com:Marcel-Jan/docker-hadoop-spark.git
